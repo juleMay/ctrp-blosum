@@ -55,55 +55,32 @@ class FileUtil():
         return pd.read_csv(path)
     
 class DataMappingUtil():
-    def get_repeat_protein_dictionary(self, proteins, divide_by_lenght = False):
-        repeat_protein_dictionary = {}
-        if divide_by_lenght:
-            # Calcula longitud de cada repeat
-            string_lengths = proteins['consensus_sequence_alignment'].str.len()
-
-            # Obtiene los valores unicos de longitud de los repeats
-            unique, counts = np.unique(string_lengths, return_counts=True)
-            print(dict(zip(unique, counts)))
-
-            # Filtra repeticiones por longitud de la repeticion
-            for limit in range(1,string_lengths.max()+1):
-                repeat_protein_dictionary.update({limit:proteins.loc[proteins['consensus_sequence_alignment'].str.len() == limit]})
-        else:
-            limit = 0
-            repeat_protein_dictionary = {limit:proteins}
-        return repeat_protein_dictionary
+    def __init__(self, proteins):
+        self.PROTEINS = proteins
     
-    def get_repeat_dictionary(self, proteins, level = 'level1'):
-        repeat_dictionary = {}
-        repeat_keys = self.get_repeat_keys(proteins)
-        for key in repeat_keys:
-            if level == 'level1':
-                repeat_list = proteins.loc[proteins['unique_repeat'] == key][['consensus_sequence_alignment', 'id_protein', 'first_residu_involved', 'last_residu_involved']]
-            elif level == 'level2':
-                repeat_list = proteins.loc[proteins['unique_repeat'] == key][['consensus_sequence_alignment', 'id_protein', 'first_residu_involved', 'last_residu_involved', 'id_cluster_level1', 'consensus_sequence_alignment_level1']]
-            elif level == 'level3':
-                repeat_list = proteins.loc[proteins['unique_repeat'] == key][['consensus_sequence_alignment', 'id_protein', 'first_residu_involved', 'last_residu_involved', 'id_cluster_level1', 'consensus_sequence_alignment_level1', 'id_cluster_level2', 'consensus_sequence_alignment_level2']]
+    def get_repeats(self, level = 'level1'):
+        unique_proteins = self.PROTEINS.drop_duplicates(subset='consensus_sequence_alignment', keep='first')
+        unique_proteins['duplicated_indices'] = unique_proteins.apply(self.get_duplicates, axis=1).tolist()
+        if level == 'level1':
+            unique_proteins = unique_proteins[['consensus_sequence_alignment', 'id_protein', 'first_residu_involved', 'last_residu_involved', 'duplicated_indices']]
+        elif level == 'level2':
+            unique_proteins = unique_proteins[['consensus_sequence_alignment', 'id_protein', 'first_residu_involved', 'last_residu_involved', 'id_cluster_level1', 'consensus_sequence_alignment_level1', 'duplicated_indices']]
+        elif level == 'level3':
+            unique_proteins = unique_proteins[['consensus_sequence_alignment', 'id_protein', 'first_residu_involved', 'last_residu_involved', 'id_cluster_level1', 'consensus_sequence_alignment_level1', 'id_cluster_level2', 'consensus_sequence_alignment_level2', 'duplicated_indices']]
 
-            repeat_list['cluster_center_consensus_sequence_alignment'] = 1
-            repeat_list['id_cluster'] = 1
-            repeat_list['number_data_points'] = 1
-            repeat_list['cluster_data_point'] = 1
-            repeat_list['is_cluster_center'] = 1
-            repeat_list['distance_to_center'] = 1
-            repeat_dictionary.update({key:repeat_list})
-        return repeat_dictionary
+            unique_proteins['cluster_center_consensus_sequence_alignment'] = 1
+            unique_proteins['id_cluster'] = 1
+            unique_proteins['number_data_points'] = 1
+            unique_proteins['cluster_data_point'] = 1
+            unique_proteins['is_cluster_center'] = 1
+            unique_proteins['distance_to_center'] = 1
+        return unique_proteins
     
-    def get_repeat_keys(self, proteins):
-        repeat_keys = []
-        proteins['unique_repeat'] = proteins['consensus_sequence_alignment'] + '_' + proteins['id_protein'] + '_' + proteins['first_residu_involved'].astype(str) + '_' + proteins['last_residu_involved'].astype(str)
-        for index, row in proteins.iterrows():
-            concatenated_value = str(row['consensus_sequence_alignment']) + '_' + str(row['id_protein']) + '_' + str(row['first_residu_involved']) + '_' + str(row['last_residu_involved'])
-            repeat_keys.append(concatenated_value)
-        repeat_keys = np.unique(repeat_keys)
-        return repeat_keys
+    def get_duplicates(self, row):
+        return self.PROTEINS[self.PROTEINS['consensus_sequence_alignment'] == row['consensus_sequence_alignment']].index.tolist()
     
 class PlotUtil():
-    def plot_affinity_cluster_tsne(self, n_clusters, labels, cluster_centers_indices, X, words, min_cluster_size = Options().MIN_CLUSTER_SIZE, sample_size = Options().SAMPLE_SIZE):
+    def plot_affinity_cluster_tsne(self, n_clusters, labels, cluster_centers_indices, X, words, silhouette = 0, min_cluster_size = Options().MIN_CLUSTER_SIZE, sample_size = Options().SAMPLE_SIZE):
         # Step 1: Apply MDS to reduce the dimensionality of the distance matrix X
         tsne = TSNE(n_components=2, metric='precomputed', init='random', random_state=69, n_jobs=-1, verbose=True)
         distance_matrix = X  # Calculate pairwise distance matrix
@@ -147,35 +124,41 @@ class PlotUtil():
 
         # Set title and display the plot
         plt.title('')
-        plt.title(f"t-SNE of Similarity Matrix\nEstimated number of clusters: {n_clusters}")
+        plt.title(f"t-SNE of Similarity Matrix\nEstimated number of clusters: {n_clusters}\nSilhouette Coefficient: {silhouette}")
         plt.xlabel('t-SNE Component 1')
         plt.ylabel('t-SNE Component 2')
-        # fig.colorbar(label='Cluster Labels')
-        #plt.show()
         plt.savefig(Options().PLOT_PATH)
 
-    def print_cluster(self, cluster_dictionary, indices_dictionary, repeat_dictionary, code = '', cluster_id_count = 1):
+    def print_cluster(self, cluster_dictionary, words, repeats, proteins, code = '', cluster_id_count = 1):
         num_clusters = len(cluster_dictionary)
         count = cluster_id_count
         result = pd.DataFrame([])
+
         for repeat, cluster in cluster_dictionary.items():
+            center_key = words[repeat]
             for point in cluster:
                 flag = True
                 try:
-                    int(point[0])
+                    flag = int(point[0]) > -1
                 except ValueError:
                     flag = False
-                if flag and int(point[0]) > -1:
+                if flag:
                     point_index = int(point[0])
-                    repeat_key = str(indices_dictionary[point_index]['consensus_sequence_alignment']) + "_" + str(indices_dictionary[point_index]['id_protein']) + '_' + str(indices_dictionary[point_index]['first_residu_involved']) +  '_' + str(indices_dictionary[point_index]['last_residu_involved'])
-                    repeat_dictionary[repeat_key]['cluster_center_consensus_sequence_alignment'] = indices_dictionary[repeat]['consensus_sequence_alignment']
-                    repeat_dictionary[repeat_key]['id_cluster'] = code + str(count).zfill(len(str(num_clusters)))
-                    repeat_dictionary[repeat_key]['number_data_points'] = len(cluster)
-                    repeat_dictionary[repeat_key]['cluster_data_point'] = point[1]
-                    repeat_dictionary[repeat_key]['is_cluster_center'] = repeat == point_index
-                    repeat_dictionary[repeat_key]['distance_to_center'] = point[2]
-                    result = pd.concat([result, repeat_dictionary[repeat_key]])
+                    repeat_key = words[point_index]
+                    data_point = repeats.loc[repeats['consensus_sequence_alignment'] == repeat_key]
+                    data_point['is_cluster_center'] = repeat == point_index
+                    if len(data_point['duplicated_indices'].tolist()[0]) > 1:
+                        duplicates = proteins.iloc[data_point['duplicated_indices'].tolist()[0][1::]][['consensus_sequence_alignment', 'id_protein', 'first_residu_involved', 'last_residu_involved']]
+                        duplicates['is_cluster_center'] = False
+                        data_point = pd.concat([data_point, duplicates], ignore_index=True)
+                    data_point['cluster_center_consensus_sequence_alignment'] = center_key
+                    data_point['id_cluster'] = code + str(count).zfill(len(str(num_clusters)))
+                    data_point['number_data_points'] = len(cluster)
+                    data_point['cluster_data_point'] = point[1]
+                    data_point['distance_to_center'] = point[2]
+                    result = pd.concat([result, data_point])
             count += 1
+        result = result.drop(columns=['duplicated_indices'])
         return result, count
 
 class ClusteringUtil():
@@ -232,23 +215,23 @@ class ClusteringUtil():
             cluster_indices = np.unique(np.nonzero(model.labels_==cluster_id))
             cluster = [[point,words[point],matrix[cluster_center_index][point]] for point in cluster_indices]
             cluster_dictionary.update({cluster_center_index: cluster})
-      if show_plot and n_clusters > 1:
-        if isinstance(model, AffinityPropagation):
-          PlotUtil().plot_affinity_cluster_tsne(n_clusters, model.labels_, model.cluster_centers_indices_, matrix, words)
-        elif isinstance(model, DBSCAN):
-          PlotUtil().plot_affinity_cluster_tsne(n_clusters, model.labels_, core_points_indices, matrix, words)
-        elif isinstance(model, SpectralClustering):
-          PlotUtil().plot_affinity_cluster_tsne(n_clusters, model.labels_, np.where(model.labels_ == cluster_id), matrix, words)
 
-
-      silhoute=-1.0
+      silhouette=-1.0
       print("Estimated number of clusters: %d" % n_clusters)
       try:
-        silhoute=metrics.silhouette_score(matrix, labels, metric="precomputed")
-        print("Silhouette Coefficient: %0.3f" % silhoute)
+        silhouette=metrics.silhouette_score(matrix, labels, metric="precomputed")
+        print("Silhouette Coefficient: %0.3f" % silhouette)
       except Exception:
          print("Silhouette Calculation Failed")
-      return cluster_dictionary, silhoute
+
+      if show_plot and n_clusters > 1:
+        if isinstance(model, AffinityPropagation):
+          PlotUtil().plot_affinity_cluster_tsne(n_clusters, model.labels_, model.cluster_centers_indices_, matrix, words, silhouette)
+        elif isinstance(model, DBSCAN):
+          PlotUtil().plot_affinity_cluster_tsne(n_clusters, model.labels_, core_points_indices, matrix, words, silhouette)
+        elif isinstance(model, SpectralClustering):
+          PlotUtil().plot_affinity_cluster_tsne(n_clusters, model.labels_, np.where(model.labels_ == cluster_id), matrix, words, silhouette)
+      return cluster_dictionary
 
     def calculate_lev(self, words, distance_func, upper_matrix=1):
         num_words = len(words)
@@ -371,13 +354,6 @@ class DistanceMatrixUtil():
                 num_subs += self._edit_dist_step(lev, i + 1, j + 1, s1, s2, 0 if num_subs < max_subs else 1)
 
         result = lev[len1][len2]/(max(len1,len2)*4)
-        # print("dist " + str(lev[len1][len2]))
-        # print("max len " + str(max(len1,len2)))
-        # print("max len " + str(max(len1,len2)))
-        # print("dist norm " + str(result))
-        # print("num subs " + str(num_subs))
-        # print("max subs " + str(max_subs))
-        # print("lev " + str(lev))
         if Options().NORMALIZE:
             return result
         else:
@@ -391,40 +367,32 @@ class DistanceMatrixUtil():
         repeats_indices = {i: row for i, (_, row) in enumerate(repeats_df.iterrows())}
         return repeats_train, repeats_indices
     
-    def get_matrix(self, repeats, file_name, path = Options().MATRIX_PATH):
+    def calculate_matrix(self, words, file_name, path = Options().MATRIX_PATH):
         if (os.path.isfile(path + '/' + file_name)):
             matrix = joblib.load(path + '/' + file_name)
         else:
             Path(path).mkdir(parents=True, exist_ok=True)
-            matrix = ClusteringUtil().calculate_lev(repeats, self.blosum_distance)
+            matrix = ClusteringUtil().calculate_lev(words, self.blosum_distance)
             joblib.dump(matrix, path + '/' + file_name)
         return matrix
     
-    def get_matrix_by_length(self, repeat_protein_dictionary, matrix_name = Options().MATRIX_NAME):
-        lev_similarity_dictionary = {}
-        words_dictionary = {}
-        repeats_indices_dictionary = {}
-        for limit, repeat_protein in repeat_protein_dictionary.items():
-            repeats, repeats_indices = self.get_repeats(limit, repeat_protein_dictionary)
-            words_dictionary.update({limit:repeats})
-            matrix = self.get_matrix(repeats, matrix_name + '_length_' + str(limit))
-            lev_similarity_dictionary.update({limit:matrix})
-            repeats_indices_dictionary.update({limit:repeats_indices})
+    def get_matrix(self, repeats, matrix_name = Options().MATRIX_NAME):
+        words = np.asarray(repeats['consensus_sequence_alignment'].tolist())
+        matrix = self.calculate_matrix(words, matrix_name + '_length_' + str(0))
 
-        return lev_similarity_dictionary, repeats_indices_dictionary, words_dictionary
+        return words, matrix
 
-cluster_id_count = 1
-Path(Options().RESULT_PATH).mkdir(parents=True, exist_ok=True)
-proteins = FileUtil().load_csv_file(Options().REPEAT_PROTEIN_FILE)
-repeat_protein_dictionary = DataMappingUtil().get_repeat_protein_dictionary(proteins)
-repeat_dictionary = DataMappingUtil().get_repeat_dictionary(proteins)
-lev_similarity_dictionary, repeats_indices_dictionary, words_dictionary = DistanceMatrixUtil().get_matrix_by_length(repeat_protein_dictionary)
-for limit, matrix in lev_similarity_dictionary.items():
-    print("Word lenght limit: ", limit)
-    cluster_dictionary, sil = ClusteringUtil().get_clusters(ClusteringUtil().affinity_model(matrix, damping_factor=Options().TOLERANCE, n_itetations=100000000, preference=Options().PREFERENCE), words_dictionary[limit], -1.0*matrix)
-    result, cluster_id_count = PlotUtil().print_cluster(cluster_dictionary, repeats_indices_dictionary[limit], repeat_dictionary, Options().PROTEOM + '_' + Options().RESULT_AFFINITY_ID + '_', cluster_id_count)
+def main():
+    cluster_id_count = 1
+    Path(Options().RESULT_PATH).mkdir(parents=True, exist_ok=True)
+    proteins = FileUtil().load_csv_file(Options().REPEAT_PROTEIN_FILE)
+    repeats = DataMappingUtil(proteins).get_repeats()
+    words, matrix = DistanceMatrixUtil().get_matrix(repeats)
+
+    cluster_dictionary = ClusteringUtil().get_clusters(ClusteringUtil().affinity_model(matrix, damping_factor=Options().TOLERANCE, n_itetations=100000000, preference=Options().PREFERENCE), words, -1.0*matrix)
+    result, cluster_id_count = PlotUtil().print_cluster(cluster_dictionary, words, repeats, proteins, Options().PROTEOM + '_' + Options().RESULT_AFFINITY_ID + '_', cluster_id_count)
     csvfile = pathlib.Path(Options().RESULT_PATH_FILE)
-    if Options().DIVIDE_BY_LENGTH :
-        result.to_csv(csvfile, index=False, mode='a', header=not csvfile.exists())
-    else :
-        result.to_csv(csvfile, index=False, mode='w')
+    result.to_csv(csvfile, index=False, mode='w')
+
+if __name__ == "__main__":
+    main()
